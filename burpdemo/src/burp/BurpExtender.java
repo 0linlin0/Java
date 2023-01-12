@@ -5,7 +5,6 @@ package burp; /**
  */
 import burp.*;
 import com.sun.deploy.util.StringUtils;
-import com.sun.tools.javac.util.Name;
 
 import java.awt.Component;
 import java.awt.event.ActionEvent;
@@ -25,6 +24,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.io.File;
 import java.io.FileNotFoundException;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 
 public class BurpExtender extends AbstractTableModel implements IBurpExtender, IScannerCheck, ITab, IMessageEditorController, IContextMenuFactory{
@@ -59,7 +60,11 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                     Thread thread = new Thread(new Runnable() {
                         @Override
                         public void run() {
-                            start(responses[0], row);
+                            try {
+                                start(responses[0], row);
+                            } catch (InterruptedException ex) {
+                                throw new RuntimeException(ex);
+                            }
                         }
                     });
                     thread.start();
@@ -215,9 +220,8 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
         return tmurlb+tmpurla.replace("/","//");
     }
 
-    public static String join(Collection var0, String var1) {
+    public String join(Collection var0, String var1) {
         StringBuffer var2 = new StringBuffer();
-
         for(Iterator var3 = var0.iterator(); var3.hasNext(); var2.append((String)var3.next())) {
             if (var2.length() != 0) {
                 var2.append(var1);
@@ -248,7 +252,7 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                     newurl = myreplace(url,"/aaa/%09../");
                     break;
                 case "Spach":
-                    newurl = myreplace(url," /");
+                    newurl = myreplace(url,"/ ");
                     break;
                 case "%23?":
                     newurl = myreplace(url,"%23?");
@@ -289,7 +293,7 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                     newurl = myreplace(url,";/aa/../");
                     break;
                 case ";/../..//":
-                    newurl = myreplace(url,";/aa/bb/../..//");
+                    newurl = myreplace(url,";/aa/bb/../../");
                     break;
                 case ";///../":
                     newurl = myreplace(url,";///aa/../");
@@ -377,8 +381,17 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
         return listmisc;
     }
 
+    public static int appearNumber(String srcText, String findText) {
+        int count = 0;
+        Pattern p = Pattern.compile(findText);
+        Matcher m = p.matcher(srcText);
+        while (m.find()) {
+            count++;
+        }
+        return count;
+    }
     //这里是真的逻辑
-    public void start(IHttpRequestResponse baseRequestResponse, int row){
+    public void start(IHttpRequestResponse baseRequestResponse, int row) throws InterruptedException {
 //        System.out.println("aaaaaaaaa");
         int logadd = 0;
         IRequestInfo OriginalRequest = this.helpers.analyzeRequest(baseRequestResponse);
@@ -417,9 +430,11 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
             logadd = logadd + 1;
         }
         fireTableRowsUpdated(this.loghang, logadd);
+        Thread.sleep(1000);
         this.stdout.println("try Header Payload");
         this.stdout.println("try Port Payload");
         this.stdout.println("try Protocol Payload");
+
 
 
         //EncodePayload
@@ -428,29 +443,40 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
             Map.Entry<String, String> eachencodepayload = encodeentries.next();
             String encodeurl = null;
             List<String> misclist = misc(OriginalRequest,payload);
+            this.stdout.println(eachencodepayload.getKey());
             switch (eachencodepayload.getKey()){
                 case "Unicode":
                     for (int i = 0; i < misclist.size(); i++) {
                         if(misclist.get(i).contains("%")){
                             encodeurl = misclist.get(i).replace("%","%u00");
+                            misclist.set(i,encodeurl);
                         }else {
                             encodeurl = misclist.get(i);
+                            misclist.set(i,encodeurl);
                         }
                         //这里发送更新后的请求
                         IHttpRequestResponse resp = null;
                         String thepath = null;
                         try {
-                            List<String> pm = (List<String>) Arrays.asList(new String(baseRequestResponse.getRequest()).split("\r\n"));
+                            List<String> pm = new ArrayList<>(Arrays.asList(new String(baseRequestResponse.getRequest()).split("\r\n")));
+//                            this.stdout.println("ppppppppppppppppm"+appearNumber(new String(baseRequestResponse.getRequest()),"\r\n"));
+//                            this.stdout.println("mmmmmmmmmmmmmmmmmmmpm"+String.valueOf(pm.size()));
                             thepath = new URL(misclist.get(i)).getPath();
-                            if(pm.get(0).contains("GET")){
-                                pm.set(0,"GET "+thepath);
-                            }else {
-                                pm.set(0,"POST "+thepath);
+                            if (pm.get(0).contains("GET")) {
+                                pm.set(0, "GET " + thepath + " HTTP/1.1");
+                            } else {
+                                pm.set(0, "POST " + thepath + " HTTP/1.1");
                             }
-                            byte[] postMessage = join(pm,"\r\n").getBytes(StandardCharsets.UTF_8);
+                            if(pm.size() < appearNumber(new String(baseRequestResponse.getRequest()),"\r\n")){
+                                int addtims = appearNumber(new String(baseRequestResponse.getRequest()),"\r\n")-pm.size();
+                                for(int iaddtims=1;iaddtims<addtims;iaddtims++){
+                                    pm.add("\r\n");
+                                }
+                            }
+                            byte[] postMessage = join(pm, "\r\n").getBytes(StandardCharsets.UTF_8);
                             resp = this.callbacks.makeHttpRequest(iHttpService, postMessage);
                         }catch (Throwable e){
-                            e.printStackTrace();
+                            e.printStackTrace(this.stdout);
                         }
 
                         LogEntry logEntry;
@@ -459,48 +485,37 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                         log.set(row+1, logEntry);
                         logadd = logadd + 1;
                         fireTableRowsUpdated(this.loghang, logadd);
+                        Thread.sleep(1000);
+
                     }
                     break;
                 case "URLEncode":
                     for (int i = 0; i < misclist.size(); i++) {
                         try {
-                            String tmpurla = misclist.get(i).substring(misclist.get(i).indexOf("://")+3);
-                            String tmphttp = misclist.get(i).substring(0,misclist.get(i).indexOf("://")+3);
-                            encodeurl = tmphttp+URLEncoder.encode(tmpurla, "UTF-8");
+                            String encodepath = new URL(misclist.get(i)).getPath();
+                            encodeurl = misclist.get(i).substring(0,misclist.get(i).indexOf(encodepath))+encodepath.replace(".", "%2E").replace(";","%3B").replace("/","%2f").replace("\\","%5C").replace("#","%23");
+                            misclist.set(i,encodeurl);
                         }catch (Exception e){
 
                         }
-
-                        //这里发送更新后的请求
-                    }
-                    break;
-                case "URLEncodeDouble":
-                    for (int i = 0; i < misclist.size(); i++) {
-                        try {
-                            String tmpurla = misclist.get(i).substring(misclist.get(i).indexOf("://")+3);
-                            String tmphttp = misclist.get(i).substring(0,misclist.get(i).indexOf("://")+3);
-                            encodeurl = tmphttp+URLEncoder.encode(URLEncoder.encode(tmpurla, "UTF-8"));
-                        }catch (Exception e){
-
-                        }
-                        //这里发送更新后的请求
-                    }
-                    break;
-                case "Encode;":
-                    for (int i = 0; i < misclist.size(); i++) {
-                        encodeurl = misclist.get(i).replace(";","%3B");
                         //这里发送更新后的请求
                         IHttpRequestResponse resp = null;
                         String thepath = null;
                         try {
-                            List<String> pm = (List<String>) Arrays.asList(new String(baseRequestResponse.getRequest()).split("\r\n"));
+                            List<String> pm = new ArrayList<>(Arrays.asList(new String(baseRequestResponse.getRequest()).split("\r\n")));
                             thepath = new URL(misclist.get(i)).getPath();
                             if(pm.get(0).contains("GET")){
-                                pm.set(0,"GET "+thepath);
+                                pm.set(0, "GET " + thepath + " HTTP/1.1");
                             }else {
-                                pm.set(0,"POST "+thepath);
+                                pm.set(0, "POST " + thepath + " HTTP/1.1");
                             }
-                            byte[] postMessage = join(pm,"\r\n").getBytes(StandardCharsets.UTF_8);
+                            if(pm.size()<appearNumber(new String(baseRequestResponse.getRequest()),"\r\n")){
+                                int addtims = appearNumber(new String(baseRequestResponse.getRequest()),"\r\n")-pm.size();
+                                for(int iaddtims=0;iaddtims<addtims;iaddtims++){
+                                    pm.add(addtims+iaddtims,"\r\n");
+                                }
+                            }
+                            byte[] postMessage = join(pm, "\r\n").getBytes(StandardCharsets.UTF_8);
                             resp = this.callbacks.makeHttpRequest(iHttpService, postMessage);
                         }catch (Throwable e){
                             e.printStackTrace();
@@ -512,6 +527,126 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                         log.set(row+1, logEntry);
                         logadd = logadd + 1;
                         fireTableRowsUpdated(this.loghang, logadd);
+                        Thread.sleep(1000);
+                    }
+                    break;
+                case "URLEncodeDouble":
+                    for (int i = 0; i < misclist.size(); i++) {
+                        try {
+                            String encodepath = new URL(misclist.get(i)).getPath();
+                            encodeurl = misclist.get(i).substring(0,misclist.get(i).indexOf(encodepath))+encodepath.replace(".", "%252E").replace(";","%253B").replace("/","%252f").replace("\\","%255C").replace("#","%2523");
+                            misclist.set(i,encodeurl);
+                        }catch (Exception e){
+
+                        }
+                        //这里发送更新后的请求
+                        IHttpRequestResponse resp = null;
+                        String thepath = null;
+                        try {
+                            List<String> pm = new ArrayList<>(Arrays.asList(new String(baseRequestResponse.getRequest()).split("\r\n")));
+                            thepath = new URL(misclist.get(i)).getPath();
+                            if(pm.get(0).contains("GET")){
+                                pm.set(0, "GET " + thepath + " HTTP/1.1");
+                            }else {
+                                pm.set(0, "POST " + thepath + " HTTP/1.1");
+                            }
+                            if(pm.size()<appearNumber(new String(baseRequestResponse.getRequest()),"\r\n")){
+                                int addtims = appearNumber(new String(baseRequestResponse.getRequest()),"\r\n")-pm.size();
+                                for(int iaddtims=0;iaddtims<addtims;iaddtims++){
+                                    pm.add(addtims+iaddtims,"\r\n");
+                                }
+                            }
+                            byte[] postMessage = join(pm, "\r\n").getBytes(StandardCharsets.UTF_8);
+                            resp = this.callbacks.makeHttpRequest(iHttpService, postMessage);
+                        }catch (Throwable e){
+                            e.printStackTrace();
+                        }
+
+                        LogEntry logEntry;
+                        logEntry = new LogEntry(OriginalRequest.getUrl(), "finished", "Please Check "+thepath, resp);
+                        log.add(logEntry);
+                        log.set(row+1, logEntry);
+                        logadd = logadd + 1;
+                        fireTableRowsUpdated(this.loghang, logadd);
+                        Thread.sleep(1000);
+                    }
+                    break;
+                case "EncodeContent":
+                    for (int i = 0; i < misclist.size(); i++) {
+                        try {
+                            String tmpurla = misclist.get(i).substring(misclist.get(i).lastIndexOf("/"));
+                            String tmphttp = misclist.get(i).substring(0,misclist.get(i).lastIndexOf("/"));
+                            encodeurl = tmphttp+URLEncoder.encode(tmpurla, "UTF-8");
+                            misclist.set(i,encodeurl);
+                        }catch (Exception e){
+
+                        }
+                        //这里发送更新后的请求
+                        IHttpRequestResponse resp = null;
+                        String thepath = null;
+                        try {
+                            List<String> pm = new ArrayList<>(Arrays.asList(new String(baseRequestResponse.getRequest()).split("\r\n")));
+                            thepath = new URL(misclist.get(i)).getPath();
+                            if(pm.get(0).contains("GET")){
+                                pm.set(0, "GET " + thepath + " HTTP/1.1");
+                            }else {
+                                pm.set(0, "POST " + thepath + " HTTP/1.1");
+                            }
+                            if(pm.size()<appearNumber(new String(baseRequestResponse.getRequest()),"\r\n")){
+                                int addtims = appearNumber(new String(baseRequestResponse.getRequest()),"\r\n")-pm.size();
+                                for(int iaddtims=0;iaddtims<addtims;iaddtims++){
+                                    pm.add(addtims+iaddtims,"\r\n");
+                                }
+                            }
+                            byte[] postMessage = join(pm, "\r\n").getBytes(StandardCharsets.UTF_8);
+                            resp = this.callbacks.makeHttpRequest(iHttpService, postMessage);
+                        }catch (Throwable e){
+                            e.printStackTrace();
+                        }
+
+                        LogEntry logEntry;
+                        logEntry = new LogEntry(OriginalRequest.getUrl(), "finished", "Please Check "+thepath, resp);
+                        log.add(logEntry);
+                        log.set(row+1, logEntry);
+                        logadd = logadd + 1;
+                        fireTableRowsUpdated(this.loghang, logadd);
+                        Thread.sleep(1000);
+                    }
+                    break;
+                case "Encode;":
+                    for (int i = 0; i < misclist.size(); i++) {
+                        encodeurl = misclist.get(i).replace(";","%3B");
+                        misclist.set(i,encodeurl);
+                        //这里发送更新后的请求
+                        IHttpRequestResponse resp = null;
+                        String thepath = null;
+                        try {
+                            List<String> pm = new ArrayList<>(Arrays.asList(new String(baseRequestResponse.getRequest()).split("\r\n")));
+                            thepath = new URL(misclist.get(i)).getPath();
+                            if(pm.get(0).contains("GET")){
+                                pm.set(0, "GET " + thepath + " HTTP/1.1");
+                            }else {
+                                pm.set(0, "POST " + thepath + " HTTP/1.1");
+                            }
+                            if(pm.size()<appearNumber(new String(baseRequestResponse.getRequest()),"\r\n")){
+                                int addtims = appearNumber(new String(baseRequestResponse.getRequest()),"\r\n")-pm.size();
+                                for(int iaddtims=0;iaddtims<addtims;iaddtims++){
+                                    pm.add(addtims+iaddtims,"\r\n");
+                                }
+                            }
+                            byte[] postMessage = join(pm, "\r\n").getBytes(StandardCharsets.UTF_8);
+                            resp = this.callbacks.makeHttpRequest(iHttpService, postMessage);
+                        }catch (Throwable e){
+                            e.printStackTrace();
+                        }
+
+                        LogEntry logEntry;
+                        logEntry = new LogEntry(OriginalRequest.getUrl(), "finished", "Please Check "+thepath, resp);
+                        log.add(logEntry);
+                        log.set(row+1, logEntry);
+                        logadd = logadd + 1;
+                        fireTableRowsUpdated(this.loghang, logadd);
+                        Thread.sleep(1000);
                     }
                     break;
                 case "Encode.":
@@ -519,6 +654,7 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                         try {
                             String encodepath = new URL(misclist.get(i)).getPath();
                             encodeurl = misclist.get(i).substring(0,misclist.get(i).indexOf(encodepath))+encodepath.replace(".", "%2E");
+                            misclist.set(i,encodeurl);
                         }catch (Exception e){
 
                         }
@@ -526,14 +662,20 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                         IHttpRequestResponse resp = null;
                         String thepath = null;
                         try {
-                            List<String> pm = (List<String>) Arrays.asList(new String(baseRequestResponse.getRequest()).split("\r\n"));
+                            List<String> pm = new ArrayList<>(Arrays.asList(new String(baseRequestResponse.getRequest()).split("\r\n")));
                             thepath = new URL(misclist.get(i)).getPath();
                             if(pm.get(0).contains("GET")){
-                                pm.set(0,"GET "+thepath);
+                                pm.set(0, "GET " + thepath + " HTTP/1.1");
                             }else {
-                                pm.set(0,"POST "+thepath);
+                                pm.set(0, "POST " + thepath + " HTTP/1.1");
                             }
-                            byte[] postMessage = join(pm,"\r\n").getBytes(StandardCharsets.UTF_8);
+                            if(pm.size()<appearNumber(new String(baseRequestResponse.getRequest()),"\r\n")){
+                                int addtims = appearNumber(new String(baseRequestResponse.getRequest()),"\r\n")-pm.size();
+                                for(int iaddtims=0;iaddtims<addtims;iaddtims++){
+                                    pm.add(addtims+iaddtims,"\r\n");
+                                }
+                            }
+                            byte[] postMessage = join(pm, "\r\n").getBytes(StandardCharsets.UTF_8);
                             resp = this.callbacks.makeHttpRequest(iHttpService, postMessage);
                         }catch (Throwable e){
                             e.printStackTrace();
@@ -545,6 +687,7 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                         log.set(row+1, logEntry);
                         logadd = logadd + 1;
                         fireTableRowsUpdated(this.loghang, logadd);
+                        Thread.sleep(1000);
                     }
                     break;
                 case "Encode/":
@@ -552,6 +695,7 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                         try {
                             String encodepath = new URL(misclist.get(i)).getPath();
                             encodeurl = misclist.get(i).substring(0,misclist.get(i).indexOf(encodepath))+encodepath.replace("/", "%2F");
+                            misclist.set(i,encodeurl);
                         }catch (Exception e){
 
                         }
@@ -559,14 +703,20 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                         IHttpRequestResponse resp = null;
                         String thepath = null;
                         try {
-                            List<String> pm = (List<String>) Arrays.asList(new String(baseRequestResponse.getRequest()).split("\r\n"));
+                            List<String> pm = new ArrayList<>(Arrays.asList(new String(baseRequestResponse.getRequest()).split("\r\n")));
                             thepath = new URL(misclist.get(i)).getPath();
                             if(pm.get(0).contains("GET")){
-                                pm.set(0,"GET "+thepath);
+                                pm.set(0, "GET " + thepath + " HTTP/1.1");
                             }else {
-                                pm.set(0,"POST "+thepath);
+                                pm.set(0, "POST " + thepath + " HTTP/1.1");
                             }
-                            byte[] postMessage = join(pm,"\r\n").getBytes(StandardCharsets.UTF_8);
+                            if(pm.size()<appearNumber(new String(baseRequestResponse.getRequest()),"\r\n")){
+                                int addtims = appearNumber(new String(baseRequestResponse.getRequest()),"\r\n")-pm.size();
+                                for(int iaddtims=0;iaddtims<addtims;iaddtims++){
+                                    pm.add(addtims+iaddtims,"\r\n");
+                                }
+                            }
+                            byte[] postMessage = join(pm, "\r\n").getBytes(StandardCharsets.UTF_8);
                             resp = this.callbacks.makeHttpRequest(iHttpService, postMessage);
                         }catch (Throwable e){
                             e.printStackTrace();
@@ -578,6 +728,7 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                         log.set(row+1, logEntry);
                         logadd = logadd + 1;
                         fireTableRowsUpdated(this.loghang, logadd);
+                        Thread.sleep(1000);
                     }
                     break;
                 case "Encode\\":
@@ -585,6 +736,7 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                         try {
                             String encodepath = new URL(misclist.get(i)).getPath();
                             encodeurl = misclist.get(i).substring(0,misclist.get(i).indexOf(encodepath))+encodepath.replace("\\", "%5C");
+                            misclist.set(i,encodeurl);
                         }catch (Exception e){
 
                         }
@@ -592,14 +744,20 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                         IHttpRequestResponse resp = null;
                         String thepath = null;
                         try {
-                            List<String> pm = (List<String>) Arrays.asList(new String(baseRequestResponse.getRequest()).split("\r\n"));
+                            List<String> pm = new ArrayList<>(Arrays.asList(new String(baseRequestResponse.getRequest()).split("\r\n")));
                             thepath = new URL(misclist.get(i)).getPath();
                             if(pm.get(0).contains("GET")){
-                                pm.set(0,"GET "+thepath);
+                                pm.set(0, "GET " + thepath + " HTTP/1.1");
                             }else {
-                                pm.set(0,"POST "+thepath);
+                                pm.set(0, "POST " + thepath + " HTTP/1.1");
                             }
-                            byte[] postMessage = join(pm,"\r\n").getBytes(StandardCharsets.UTF_8);
+                            if(pm.size()<appearNumber(new String(baseRequestResponse.getRequest()),"\r\n")){
+                                int addtims = appearNumber(new String(baseRequestResponse.getRequest()),"\r\n")-pm.size();
+                                for(int iaddtims=0;iaddtims<addtims;iaddtims++){
+                                    pm.add(addtims+iaddtims,"\r\n");
+                                }
+                            }
+                            byte[] postMessage = join(pm, "\r\n").getBytes(StandardCharsets.UTF_8);
                             resp = this.callbacks.makeHttpRequest(iHttpService, postMessage);
                         }catch (Throwable e){
                             e.printStackTrace();
@@ -611,6 +769,7 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                         log.set(row+1, logEntry);
                         logadd = logadd + 1;
                         fireTableRowsUpdated(this.loghang, logadd);
+                        Thread.sleep(1000);
                     }
                     break;
                 case "Encode;.":
@@ -618,6 +777,7 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                         try {
                             String encodepath = new URL(misclist.get(i)).getPath();
                             encodeurl = misclist.get(i).substring(0,misclist.get(i).indexOf(encodepath))+encodepath.replace(".", "%2E").replace(";","%3B");
+                            misclist.set(i,encodeurl);
                         }catch (Exception e){
 
                         }
@@ -625,14 +785,20 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                         IHttpRequestResponse resp = null;
                         String thepath = null;
                         try {
-                            List<String> pm = (List<String>) Arrays.asList(new String(baseRequestResponse.getRequest()).split("\r\n"));
+                            List<String> pm = new ArrayList<>(Arrays.asList(new String(baseRequestResponse.getRequest()).split("\r\n")));
                             thepath = new URL(misclist.get(i)).getPath();
                             if(pm.get(0).contains("GET")){
-                                pm.set(0,"GET "+thepath);
+                                pm.set(0, "GET " + thepath + " HTTP/1.1");
                             }else {
-                                pm.set(0,"POST "+thepath);
+                                pm.set(0, "POST " + thepath + " HTTP/1.1");
                             }
-                            byte[] postMessage = join(pm,"\r\n").getBytes(StandardCharsets.UTF_8);
+                            if(pm.size()<appearNumber(new String(baseRequestResponse.getRequest()),"\r\n")){
+                                int addtims = appearNumber(new String(baseRequestResponse.getRequest()),"\r\n")-pm.size();
+                                for(int iaddtims=0;iaddtims<addtims;iaddtims++){
+                                    pm.add(addtims+iaddtims,"\r\n");
+                                }
+                            }
+                            byte[] postMessage = join(pm, "\r\n").getBytes(StandardCharsets.UTF_8);
                             resp = this.callbacks.makeHttpRequest(iHttpService, postMessage);
                         }catch (Throwable e){
                             e.printStackTrace();
@@ -644,6 +810,7 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                         log.set(row+1, logEntry);
                         logadd = logadd + 1;
                         fireTableRowsUpdated(this.loghang, logadd);
+                        Thread.sleep(1000);
                     }
                     break;
                 case "Encode;/":
@@ -651,6 +818,7 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                         try {
                             String encodepath = new URL(misclist.get(i)).getPath();
                             encodeurl = misclist.get(i).substring(0,misclist.get(i).indexOf(encodepath))+encodepath.replace("/", "%2F").replace(";","%3B");
+                            misclist.set(i,encodeurl);
                         }catch (Exception e){
 
                         }
@@ -658,14 +826,20 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                         IHttpRequestResponse resp = null;
                         String thepath = null;
                         try {
-                            List<String> pm = (List<String>) Arrays.asList(new String(baseRequestResponse.getRequest()).split("\r\n"));
+                            List<String> pm = new ArrayList<>(Arrays.asList(new String(baseRequestResponse.getRequest()).split("\r\n")));
                             thepath = new URL(misclist.get(i)).getPath();
                             if(pm.get(0).contains("GET")){
-                                pm.set(0,"GET "+thepath);
+                                pm.set(0, "GET " + thepath + " HTTP/1.1");
                             }else {
-                                pm.set(0,"POST "+thepath);
+                                pm.set(0, "POST " + thepath + " HTTP/1.1");
                             }
-                            byte[] postMessage = join(pm,"\r\n").getBytes(StandardCharsets.UTF_8);
+                            if(pm.size()<appearNumber(new String(baseRequestResponse.getRequest()),"\r\n")){
+                                int addtims = appearNumber(new String(baseRequestResponse.getRequest()),"\r\n")-pm.size();
+                                for(int iaddtims=0;iaddtims<addtims;iaddtims++){
+                                    pm.add(addtims+iaddtims,"\r\n");
+                                }
+                            }
+                            byte[] postMessage = join(pm, "\r\n").getBytes(StandardCharsets.UTF_8);
                             resp = this.callbacks.makeHttpRequest(iHttpService, postMessage);
                         }catch (Throwable e){
                             e.printStackTrace();
@@ -677,6 +851,7 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                         log.set(row+1, logEntry);
                         logadd = logadd + 1;
                         fireTableRowsUpdated(this.loghang, logadd);
+                        Thread.sleep(1000);
                     }
                     break;
                 case "Encode\\/":
@@ -684,6 +859,7 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                         try {
                             String encodepath = new URL(misclist.get(i)).getPath();
                             encodeurl = misclist.get(i).substring(0,misclist.get(i).indexOf(encodepath))+encodepath.replace("\\", "%5C").replace("/","%2F");
+                            misclist.set(i,encodeurl);
                         }catch (Exception e){
 
                         }
@@ -691,14 +867,20 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                         IHttpRequestResponse resp = null;
                         String thepath = null;
                         try {
-                            List<String> pm = (List<String>) Arrays.asList(new String(baseRequestResponse.getRequest()).split("\r\n"));
+                            List<String> pm = new ArrayList<>(Arrays.asList(new String(baseRequestResponse.getRequest()).split("\r\n")));
                             thepath = new URL(misclist.get(i)).getPath();
                             if(pm.get(0).contains("GET")){
-                                pm.set(0,"GET "+thepath);
+                                pm.set(0, "GET " + thepath + " HTTP/1.1");
                             }else {
-                                pm.set(0,"POST "+thepath);
+                                pm.set(0, "POST " + thepath + " HTTP/1.1");
                             }
-                            byte[] postMessage = join(pm,"\r\n").getBytes(StandardCharsets.UTF_8);
+                            if(pm.size()<appearNumber(new String(baseRequestResponse.getRequest()),"\r\n")){
+                                int addtims = appearNumber(new String(baseRequestResponse.getRequest()),"\r\n")-pm.size();
+                                for(int iaddtims=0;iaddtims<addtims;iaddtims++){
+                                    pm.add(addtims+iaddtims,"\r\n");
+                                }
+                            }
+                            byte[] postMessage = join(pm, "\r\n").getBytes(StandardCharsets.UTF_8);
                             resp = this.callbacks.makeHttpRequest(iHttpService, postMessage);
                         }catch (Throwable e){
                             e.printStackTrace();
@@ -710,6 +892,7 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                         log.set(row+1, logEntry);
                         logadd = logadd + 1;
                         fireTableRowsUpdated(this.loghang, logadd);
+                        Thread.sleep(1000);
                     }
                     break;
                 case "Encode./":
@@ -717,6 +900,7 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                         try {
                             String encodepath = new URL(misclist.get(i)).getPath();
                             encodeurl = misclist.get(i).substring(0,misclist.get(i).indexOf(encodepath))+encodepath.replace(".", "%2E").replace("/","%2F");
+                            misclist.set(i,encodeurl);
                         }catch (Exception e){
 
                         }
@@ -724,14 +908,20 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                         IHttpRequestResponse resp = null;
                         String thepath = null;
                         try {
-                            List<String> pm = (List<String>) Arrays.asList(new String(baseRequestResponse.getRequest()).split("\r\n"));
+                            List<String> pm = new ArrayList<>(Arrays.asList(new String(baseRequestResponse.getRequest()).split("\r\n")));
                             thepath = new URL(misclist.get(i)).getPath();
                             if(pm.get(0).contains("GET")){
-                                pm.set(0,"GET "+thepath);
+                                pm.set(0, "GET " + thepath + " HTTP/1.1");
                             }else {
-                                pm.set(0,"POST "+thepath);
+                                pm.set(0, "POST " + thepath + " HTTP/1.1");
                             }
-                            byte[] postMessage = join(pm,"\r\n").getBytes(StandardCharsets.UTF_8);
+                            if(pm.size()<appearNumber(new String(baseRequestResponse.getRequest()),"\r\n")){
+                                int addtims = appearNumber(new String(baseRequestResponse.getRequest()),"\r\n")-pm.size();
+                                for(int iaddtims=0;iaddtims<addtims;iaddtims++){
+                                    pm.add(addtims+iaddtims,"\r\n");
+                                }
+                            }
+                            byte[] postMessage = join(pm, "\r\n").getBytes(StandardCharsets.UTF_8);
                             resp = this.callbacks.makeHttpRequest(iHttpService, postMessage);
                         }catch (Throwable e){
                             e.printStackTrace();
@@ -743,6 +933,7 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                         log.set(row+1, logEntry);
                         logadd = logadd + 1;
                         fireTableRowsUpdated(this.loghang, logadd);
+                        Thread.sleep(1000);
                     }
                     break;
                 case "Encode.\\":
@@ -750,6 +941,7 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                         try {
                             String encodepath = new URL(misclist.get(i)).getPath();
                             encodeurl = misclist.get(i).substring(0,misclist.get(i).indexOf(encodepath))+encodepath.replace(".", "%2E").replace("\\","%5C");
+                            misclist.set(i,encodeurl);
                         }catch (Exception e){
 
                         }
@@ -757,14 +949,20 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                         IHttpRequestResponse resp = null;
                         String thepath = null;
                         try {
-                            List<String> pm = (List<String>) Arrays.asList(new String(baseRequestResponse.getRequest()).split("\r\n"));
+                            List<String> pm = new ArrayList<>(Arrays.asList(new String(baseRequestResponse.getRequest()).split("\r\n")));
                             thepath = new URL(misclist.get(i)).getPath();
                             if(pm.get(0).contains("GET")){
-                                pm.set(0,"GET "+thepath);
+                                pm.set(0, "GET " + thepath + " HTTP/1.1");
                             }else {
-                                pm.set(0,"POST "+thepath);
+                                pm.set(0, "POST " + thepath + " HTTP/1.1");
                             }
-                            byte[] postMessage = join(pm,"\r\n").getBytes(StandardCharsets.UTF_8);
+                            if(pm.size()<appearNumber(new String(baseRequestResponse.getRequest()),"\r\n")){
+                                int addtims = appearNumber(new String(baseRequestResponse.getRequest()),"\r\n")-pm.size();
+                                for(int iaddtims=0;iaddtims<addtims;iaddtims++){
+                                    pm.add(addtims+iaddtims,"\r\n");
+                                }
+                            }
+                            byte[] postMessage = join(pm, "\r\n").getBytes(StandardCharsets.UTF_8);
                             resp = this.callbacks.makeHttpRequest(iHttpService, postMessage);
                         }catch (Throwable e){
                             e.printStackTrace();
@@ -776,6 +974,7 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                         log.set(row+1, logEntry);
                         logadd = logadd + 1;
                         fireTableRowsUpdated(this.loghang, logadd);
+                        Thread.sleep(1000);
                     }
                     break;
                 case "EncodeOnebyOne":
